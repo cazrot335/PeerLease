@@ -6,6 +6,7 @@ const TeleBot = require('telebot');
 const { toNano, beginCell, Address } = require('@ton/core');
 const TONConnectService = require('./tonConnectService');
 const TransactionVerifier = require('./transactionVerifier');
+const UserDatabase = require('./userDatabase');
 
 // ============================================================================
 // Configuration
@@ -41,19 +42,26 @@ const tonService = new TONConnectService(CONTRACT_ADDRESS, TON_NETWORK);
 // Initialize Transaction Verifier
 const txVerifier = new TransactionVerifier(TON_NETWORK);
 
+// Initialize User Database
+const db = new UserDatabase('./users.db');
+
 // Store user sessions
 const sessions = {};
 const pendingTransactions = {};
+const userWallets = {}; // Map telegram ID to wallet
 
 // ============================================================================
 // Main Menu
 // ============================================================================
 
 const mainMenu = bot.inlineKeyboard([
-  [bot.inlineButton('🏪 Rent Item', { callback: 'rent_start' })],
+  [bot.inlineButton('🔗 Connect Wallet', { callback: 'wallet_connect' })],
+  [bot.inlineButton('🏪 Browse Items', { callback: 'browse_items' })],
+  [bot.inlineButton('👤 My Account', { callback: 'my_account' })],
   [bot.inlineButton('📦 My Rentals', { callback: 'my_rentals' })],
-  [bot.inlineButton('🔙 Return Item', { callback: 'return_start' })],
-  [bot.inlineButton('⚠️ Report Issue', { callback: 'dispute_start' })],
+  [bot.inlineButton('🎁 My Items', { callback: 'my_items' })],
+  [bot.inlineButton('➕ List New Item', { callback: 'list_item' })],
+  [bot.inlineButton('↩️ Return Item', { callback: 'return_item_menu' })],
   [bot.inlineButton('❓ Help', { callback: 'help' })]
 ]);
 
@@ -62,13 +70,27 @@ const mainMenu = bot.inlineKeyboard([
 // ============================================================================
 
 // /start - Show main menu
-bot.on('/start', (msg) => {
+bot.on('/start', async (msg) => {
   const chatId = msg.chat.id;
   const firstName = msg.from.first_name || 'User';
   
+  // Add user to database
+  await db.addUser(chatId, firstName);
+  
+  // Check if wallet connected
+  const user = await db.getUserByTelegramId(chatId);
+  
+  let message = `👋 Welcome ${firstName}!\n\n🏪 TON Rental Marketplace\n\n`;
+  
+  if (user && user.wallet_address) {
+    message += `💼 Connected Wallet: ${user.wallet_address.substring(0, 20)}...\n\nWhat would you like to do?`;
+  } else {
+    message += `🔗 Please connect your TON wallet to get started!\n\nTap "🔗 Connect Wallet" below.`;
+  }
+  
   bot.sendMessage(
     chatId,
-    `👋 Welcome ${firstName}!\n\n🏪 TON Rental Marketplace\n\nRent items securely on TON blockchain!`,
+    message,
     { markup: mainMenu, parseMode: 'html' }
   );
 });
@@ -184,7 +206,36 @@ ${isLikelyConfirmed ? '✅ Your transaction was successful!' : '⏳ Still proces
 });
 
 // ============================================================================
-// Callback Handlers
+// Helper Functions
+// ============================================================================
+
+function generateTONConnectLink() {
+  // Generate TON Connect link for wallet connection
+  // This will work with Tonkeeper, MyTonWallet, and other extensions
+  const tonConnectParams = {
+    v: '2',
+    id: Math.random().toString(36).substr(2, 9),
+    r: 'https://t.me/rental_marketplace_bot'  // Fallback redirect
+  };
+  
+  return `https://app.tonkeeper.com/ton-connect?${Object.entries(tonConnectParams)
+    .map(([k, v]) => `${k}=${encodeURIComponent(v)}`)
+    .join('&')}`;
+}
+
+function generateTONDeepLink(transaction) {
+  // Generate deep link for TON transfer
+  const params = [
+    `to=${encodeURIComponent(transaction.address)}`,
+    `amount=${transaction.amount}`,
+    `text=Rental%20Payment`
+  ].join('&');
+  
+  return `https://app.tonkeeper.com/transfer/${params}`;
+}
+
+// ============================================================================
+// Callback Handlers - Wallet & Account Management
 // ============================================================================
 
 bot.on('callbackQuery', async (query) => {
@@ -193,53 +244,407 @@ bot.on('callbackQuery', async (query) => {
   const msgId = query.message.message_id;
 
   try {
-    // Rent item flow
-    if (data === 'rent_start') {
-      sessions[chatId] = { action: 'rent', step: 1 };
-      bot.sendMessage(chatId, '📝 <b>Create New Rental</b>\n\nEnter <b>Item ID</b> (number):', { 
+    // Wallet connection - choose method
+    if (data === 'wallet_connect') {
+      bot.sendMessage(chatId, '<b>Connect Wallet</b>\n\nChoose connection method:', {
+        parseMode: 'html',
+        markup: bot.inlineKeyboard([
+          [bot.inlineButton('🔗 TON Connect', { callback: 'wallet_connect_popup' })],
+          [bot.inlineButton('✏️ Manual Entry', { callback: 'wallet_connect_manual' })]
+        ])
+      });
+    }
+
+    // TON Connect popup wallet
+    else if (data === 'wallet_connect_popup') {
+      const tonConnectLink = generateTONConnectLink();
+      bot.sendMessage(chatId, '🔗 <b>TON Connect</b>\n\nClick the button below to connect via wallet extension:', {
+        parseMode: 'html',
+        markup: bot.inlineKeyboard([
+          [bot.inlineButton('Open Wallet', { url: tonConnectLink })],
+          [bot.inlineButton('Back', { callback: 'wallet_connect' })]
+        ])
+      });
+    }
+
+    // Manual wallet entry
+    else if (data === 'wallet_connect_manual') {
+      sessions[chatId] = { action: 'connect_wallet', step: 1 };
+      bot.sendMessage(chatId, '✏️ <b>Enter Wallet Address</b>\n\nPaste your wallet address (starts with EQ or 0Q):', { 
         parseMode: 'html' 
       });
     }
 
-    // View rentals
+    // Browse available items
+    else if (data === 'browse_items') {
+      const items = await db.getAvailableItems();
+      
+      if (items.length === 0) {
+        bot.sendMessage(chatId, '❌ No items available for rent right now.', { markup: mainMenu });
+      } else {
+        let message = '<b>Available Items</b>\n\n';
+        const buttons = [];
+        
+        items.forEach((item, idx) => {
+          message += `${idx + 1}. <b>${item.item_name}</b>\n`;
+          message += `   ${item.description}\n`;
+          message += `   Price: ${item.price_per_day} TON/day\n`;
+          message += `   Deposit: ${item.deposit_amount} TON\n\n`;
+          
+          buttons.push([bot.inlineButton(`Rent #${idx + 1}`, { callback: `rent_item_${item.id}` })]);
+        });
+        
+        buttons.push([bot.inlineButton('Back', { callback: 'my_account' })]);
+        
+        bot.sendMessage(chatId, message, { 
+          parseMode: 'html', 
+          markup: bot.inlineKeyboard(buttons)
+        });
+      }
+    }
+
+    // My account (show stats)
+    else if (data === 'my_account') {
+      const user = await db.getUserByTelegramId(chatId);
+      
+      if (!user || !user.wallet_address) {
+        bot.sendMessage(chatId, '❌ Please connect your wallet first!', { markup: mainMenu });
+        return;
+      }
+
+      const stats = await db.getRentalStats(user.wallet_address);
+      
+      bot.sendMessage(chatId, `
+💼 <b>Your Account</b>
+
+📍 Wallet: ${user.wallet_address.substring(0, 20)}...${user.wallet_address.substring(user.wallet_address.length - 10)}
+📊 Member Since: ${user.connected_at}
+
+<b>📈 Rental Stats:</b>
+• Items I'm Renting: ${stats.active_rentals || 0}
+• Items Rented Out: ${stats.items_rented_out || 0}
+• Completed Rentals: ${stats.completed_rentals || 0}
+• Total Items Listed: ${stats.total_items || 0}
+• Total Earned: ${stats.total_earned ? stats.total_earned.toFixed(2) : 0} TON
+
+/verify - Check transactions
+      `, { parseMode: 'html', markup: mainMenu });
+    }
+
+    // My rentals (items I'm renting)
     else if (data === 'my_rentals') {
-      handleViewRentals(chatId);
+      const user = await db.getUserByTelegramId(chatId);
+      
+      if (!user || !user.wallet_address) {
+        bot.sendMessage(chatId, '❌ Please connect your wallet first!', { markup: mainMenu });
+        return;
+      }
+
+      const rentals = await db.getActiveRentalsForRenter(user.wallet_address);
+      
+      if (rentals.length === 0) {
+        bot.sendMessage(chatId, '� <b>My Rentals</b>\n\nYou don\'t have any active rentals.\n\nBrowse items to rent!', { 
+          parseMode: 'html',
+          markup: mainMenu 
+        });
+      } else {
+        let message = '<b>📦 My Active Rentals</b>\n\n';
+        rentals.forEach((rental, idx) => {
+          const daysLeft = Math.ceil((new Date(rental.rental_end) - new Date()) / (1000 * 60 * 60 * 24));
+          message += `${idx + 1}. <b>${rental.item_name}</b>\n`;
+          message += `   Owner: ${rental.owner_name}\n`;
+          message += `   Price: ${rental.price_paid} TON\n`;
+          message += `   📅 Return in: ${daysLeft} days\n\n`;
+        });
+        
+        bot.sendMessage(chatId, message, { parseMode: 'html', markup: mainMenu });
+      }
     }
 
-    // Return item flow
-    else if (data === 'return_start') {
-      sessions[chatId] = { action: 'return', step: 1 };
-      bot.sendMessage(chatId, '🔙 <b>Return Item</b>\n\nEnter <b>Rental Item ID</b>:', { 
+    // My items (items I listed for rent)
+    else if (data === 'my_items') {
+      const user = await db.getUserByTelegramId(chatId);
+      
+      if (!user || !user.wallet_address) {
+        bot.sendMessage(chatId, '❌ Please connect your wallet first!', { markup: mainMenu });
+        return;
+      }
+
+      const ownedItems = await db.getOwnedItems(user.wallet_address);
+      const rentingOut = await db.getActiveRentalsForOwner(user.wallet_address);
+      
+      let message = '<b>🎁 My Listed Items</b>\n\n';
+      
+      if (ownedItems.length === 0) {
+        message += '❌ You haven\'t listed any items yet.\n\nStart by adding an item to rent!';
+      } else {
+        ownedItems.forEach((item, idx) => {
+          const isRented = rentingOut.some(r => r.item_id === item.id);
+          message += `${idx + 1}. <b>${item.item_name}</b>\n`;
+          message += `   📝 ${item.description}\n`;
+          message += `   💰 ${item.price_per_day} TON/day\n`;
+          message += `   Status: ${isRented ? '🔴 Rented Out' : '🟢 Available'}\n\n`;
+        });
+      }
+      
+      bot.sendMessage(chatId, message, { parseMode: 'html', markup: mainMenu });
+    }
+
+    // List new item
+    else if (data === 'list_item') {
+      const user = await db.getUserByTelegramId(chatId);
+      
+      if (!user || !user.wallet_address) {
+        bot.sendMessage(chatId, '❌ Please connect your wallet first before listing items!', { markup: mainMenu });
+        return;
+      }
+
+      sessions[chatId] = { action: 'list_item', step: 1 };
+      bot.sendMessage(chatId, '📝 <b>List New Item</b>\n\nWhat is the name of the item you want to rent out?', { 
         parseMode: 'html' 
       });
     }
 
-    // Report dispute flow
-    else if (data === 'dispute_start') {
-      sessions[chatId] = { action: 'dispute', step: 1 };
-      bot.sendMessage(chatId, '⚠️ <b>Report Issue</b>\n\nEnter <b>Rental Item ID</b>:', { 
-        parseMode: 'html' 
+    // Rent item - when user clicks rent button
+    else if (data.startsWith('rent_item_')) {
+      const itemId = parseInt(data.replace('rent_item_', ''));
+      const user = await db.getUserByTelegramId(chatId);
+      
+      if (!user || !user.wallet_address) {
+        bot.sendMessage(chatId, '❌ Please connect your wallet first to rent items!', { markup: mainMenu });
+        return;
+      }
+
+      try {
+        // Get item details from database
+        const items = await new Promise((resolve, reject) => {
+          db.db.all(`SELECT * FROM items WHERE id = ?`, [itemId], (err, rows) => {
+            if (err) reject(err);
+            else resolve(rows || []);
+          });
+        });
+
+        if (!items || items.length === 0) {
+          bot.sendMessage(chatId, '❌ Item not found!', { markup: mainMenu });
+          return;
+        }
+
+        const item = items[0];
+
+        // Store item in session and ask for duration
+        sessions[chatId] = { action: 'rent_item', step: 1, itemId, item };
+        
+        bot.sendMessage(chatId, `
+<b>Rent: ${item.item_name}</b>
+
+Description: ${item.description}
+Price: ${item.price_per_day} TON/day
+Deposit: ${item.deposit_amount} TON
+
+<b>How many days do you want to rent?</b>
+(Enter a number: 1, 3, 7, etc.)
+        `, { parseMode: 'html' });
+      } catch (error) {
+        console.error('Rent item error:', error);
+        bot.sendMessage(chatId, `❌ Error: ${error.message}`, { markup: mainMenu });
+      }
+    }
+
+    // Return item menu
+    else if (data === 'return_item_menu') {
+      const user = await db.getUserByTelegramId(chatId);
+      
+      if (!user || !user.wallet_address) {
+        bot.sendMessage(chatId, '❌ Please connect your wallet first!', { markup: mainMenu });
+        return;
+      }
+
+      const rentals = await db.getActiveRentalsForRenter(user.wallet_address);
+      
+      if (rentals.length === 0) {
+        bot.sendMessage(chatId, '📦 No active rentals to return.', { markup: mainMenu });
+        return;
+      }
+
+      let message = '<b>Return Item</b>\n\nSelect which item to return:\n\n';
+      const buttons = [];
+
+      rentals.forEach((rental, idx) => {
+        const daysLeft = Math.ceil((new Date(rental.rental_end) - new Date()) / (1000 * 60 * 60 * 24));
+        message += `${idx + 1}. ${rental.item_name}\n`;
+        message += `   Return by: ${daysLeft} days\n\n`;
+        buttons.push([bot.inlineButton(`Return #${idx + 1}`, { callback: `return_rental_${rental.id}` })]);
       });
+
+      buttons.push([bot.inlineButton('Cancel', { callback: 'my_rentals' })]);
+
+      bot.sendMessage(chatId, message, { 
+        parseMode: 'html',
+        markup: bot.inlineKeyboard(buttons)
+      });
+    }
+
+    // Return specific rental
+    else if (data.startsWith('return_rental_')) {
+      const rentalId = parseInt(data.replace('return_rental_', ''));
+      
+      bot.sendMessage(chatId, `
+<b>Confirm Return</b>
+
+Rental ID: #${rentalId}
+
+Is the item in good condition?
+      `, { 
+        parseMode: 'html',
+        markup: bot.inlineKeyboard([
+          [bot.inlineButton('YES - Item is good', { callback: `confirm_return_yes_${rentalId}` })],
+          [bot.inlineButton('NO - Item damaged', { callback: `confirm_return_no_${rentalId}` })],
+          [bot.inlineButton('Cancel', { callback: 'return_item_menu' })]
+        ])
+      });
+    }
+
+    // Confirm return YES
+    else if (data.startsWith('confirm_return_yes_')) {
+      const rentalId = parseInt(data.replace('confirm_return_yes_', ''));
+      
+      try {
+        await db.completeRental(rentalId);
+        
+        bot.sendMessage(chatId, `
+<b>Return Confirmed!</b>
+
+Rental ID: #${rentalId}
+Status: Completed
+
+Deposit refunded automatically!
+        `, { 
+          parseMode: 'html',
+          markup: mainMenu
+        });
+      } catch (error) {
+        bot.sendMessage(chatId, `❌ Error: ${error.message}`, { markup: mainMenu });
+      }
+    }
+
+    // Confirm return NO (damaged)
+    else if (data.startsWith('confirm_return_no_')) {
+      const rentalId = parseInt(data.replace('confirm_return_no_', ''));
+      
+      bot.sendMessage(chatId, `
+<b>Report Damage/Issue</b>
+
+Rental ID: #${rentalId}
+
+Please describe the damage or issue:
+      `, { parseMode: 'html' });
+      
+      sessions[chatId] = { action: 'report_damage', rentalId };
+    }
+
+    // Confirm rental - save to database
+    else if (data.startsWith('confirm_rent_')) {
+      const parts = data.replace('confirm_rent_', '').split('_');
+      const itemId = parseInt(parts[0]);
+      const days = parseInt(parts[1]);
+
+      try {
+        const user = await db.getUserByTelegramId(chatId);
+        
+        // Get item details
+        const itemsData = await new Promise((resolve, reject) => {
+          db.db.all(`SELECT * FROM items WHERE id = ?`, [itemId], (err, rows) => {
+            if (err) reject(err);
+            else resolve(rows || []);
+          });
+        });
+
+        if (itemsData.length === 0) {
+          bot.sendMessage(chatId, '❌ Item not found!', { markup: mainMenu });
+          return;
+        }
+
+        const item = itemsData[0];
+        const rentalStart = new Date();
+        const rentalEnd = new Date(rentalStart.getTime() + days * 24 * 60 * 60 * 1000);
+        const totalPrice = item.price_per_day * days;
+
+        // Create rental in database
+        await new Promise((resolve, reject) => {
+          db.db.run(
+            `INSERT INTO rentals (item_id, renter_wallet, owner_wallet, rental_start, rental_end, price_paid, deposit_paid, status, transaction_hash)
+             VALUES (?, ?, ?, ?, ?, ?, ?, 'active', 'pending_payment')`,
+            [itemId, user.wallet_address, item.owner_wallet, rentalStart, rentalEnd, totalPrice, item.deposit_amount],
+            function(err) {
+              if (err) reject(err);
+              else resolve(this.lastID);
+            }
+          );
+        });
+
+        const totalCost = totalPrice + item.deposit_amount + 0.05;
+
+        bot.sendMessage(chatId, `
+<b>Rental Created!</b>
+
+Item: ${item.item_name}
+Duration: ${days} days
+Return by: ${rentalEnd.toLocaleDateString()}
+
+Total to pay: ${totalCost.toFixed(2)} TON
+
+To complete:
+1. Open your TON wallet
+2. Send ${totalCost.toFixed(2)} TON to contract
+3. Your rental will activate automatically
+
+Rental tracking enabled!
+      `, {
+          parseMode: 'html',
+          markup: mainMenu
+        });
+
+      } catch (error) {
+        console.error('Confirm rent error:', error);
+        bot.sendMessage(chatId, `❌ Error: ${error.message}`, { markup: mainMenu });
+      }
     }
 
     // Help
     else if (data === 'help') {
       bot.sendMessage(chatId, `
-<b>❓ Help Menu</b>
+📖 <b>How to Use</b>
 
-💡 I can help you:
-• Rent items
-• Manage rentals
-• Return items
-• Report issues
-• View stats
+<b>� Connect Wallet:</b>
+Enter your TON wallet address to link your account.
+All rentals will be tracked to this wallet.
 
-📚 Commands:
-/start - Show main menu
-/help - Show this help
-/status - Check bot status
+<b>📦 Browse Items:</b>
+See all available items for rent.
+View price, deposit, and details.
 
-For issues, use "Report Issue" option.
+<b>👤 My Account:</b>
+View your stats and rental history.
+
+<b>� My Rentals:</b>
+Items you're currently renting.
+See return dates and owner info.
+
+<b>🎁 My Items:</b>
+Items you've listed for others to rent.
+Track who's renting your items.
+
+<b>💰 Pricing:</b>
+• Rental price varies by item
+• Security deposit required
+• Deposit returned on successful return
+• Late fees may apply
+
+<b>🔐 Security:</b>
+✓ Wallet-based authentication
+✓ Funds held in escrow
+✓ Fair dispute resolution
+✓ Blockchain verified
       `, { parseMode: 'html', markup: mainMenu });
     }
 
@@ -262,7 +667,23 @@ bot.on('text', async (msg) => {
   if (!session) return;
 
   try {
-    if (session.action === 'rent') {
+    // Wallet connection
+    if (session.action === 'connect_wallet') {
+      await handleWalletConnection(chatId, text, session);
+    }
+    else if (session.action === 'list_item') {
+      await handleListItemFlow(chatId, text, session);
+    }
+    else if (session.action === 'rent_item') {
+      await handleRentItemFlow(chatId, text, session);
+    }
+    else if (session.action === 'confirm_return') {
+      // Already handled in callbacks
+    }
+    else if (session.action === 'report_damage') {
+      await handleReportDamage(chatId, text, session);
+    }
+    else if (session.action === 'rent') {
       await handleRentFlow(chatId, text, session);
     } 
     else if (session.action === 'return') {
@@ -276,6 +697,216 @@ bot.on('text', async (msg) => {
     bot.sendMessage(chatId, `❌ <b>Error</b>: ${error.message}`, { parseMode: 'html' });
   }
 });
+
+// ============================================================================
+// Wallet Connection Flow
+// ============================================================================
+
+async function handleWalletConnection(chatId, input, session) {
+  try {
+    // Validate wallet address format
+    if (!input.startsWith('EQ') && !input.startsWith('0Q')) {
+      bot.sendMessage(chatId, '❌ Invalid wallet address. Must start with EQ or 0Q');
+      return;
+    }
+
+    // Connect wallet to user
+    await db.connectWallet(chatId, input);
+    
+    // Store in memory
+    userWallets[chatId] = input;
+
+    bot.sendMessage(chatId, `
+✅ <b>Wallet Connected!</b>
+
+💼 Wallet: ${input.substring(0, 20)}...${input.substring(input.length - 10)}
+
+Your account is now linked to this wallet.
+All rentals will be tracked to this address.
+
+👉 /start - Return to main menu
+    `, { parseMode: 'html', markup: mainMenu });
+
+    delete sessions[chatId];
+  } catch (error) {
+    bot.sendMessage(chatId, `❌ Error connecting wallet: ${error.message}`, { parseMode: 'html' });
+  }
+}
+
+// ============================================================================
+// List New Item Flow (User-Set Pricing)
+// ============================================================================
+
+async function handleListItemFlow(chatId, input, session) {
+  try {
+    if (session.step === 1) {
+      // Item name
+      if (input.trim().length === 0) {
+        bot.sendMessage(chatId, '❌ Please enter a valid item name');
+        return;
+      }
+      
+      session.itemName = input.trim();
+      session.step = 2;
+      bot.sendMessage(chatId, '📝 <b>Describe your item</b>\n(e.g., "Mountain bike, good condition, new tires"):', { 
+        parseMode: 'html' 
+      });
+    } 
+    else if (session.step === 2) {
+      // Description
+      if (input.trim().length === 0) {
+        bot.sendMessage(chatId, '❌ Please enter a valid description');
+        return;
+      }
+      
+      session.description = input.trim();
+      session.step = 3;
+      bot.sendMessage(chatId, '💰 <b>Set rental price</b>\n\nHow much TON per day? (e.g., 0.5):', { 
+        parseMode: 'html' 
+      });
+    } 
+    else if (session.step === 3) {
+      // Price per day
+      const price = parseFloat(input);
+      if (isNaN(price) || price <= 0) {
+        bot.sendMessage(chatId, '❌ Please enter a valid price (must be > 0)');
+        return;
+      }
+      
+      session.pricePerDay = price;
+      session.step = 4;
+      bot.sendMessage(chatId, '🏠 <b>Set security deposit</b>\n\nHow much TON deposit? (e.g., 2.0):\n\n<i>Returned to renters after successful return</i>', { 
+        parseMode: 'html' 
+      });
+    } 
+    else if (session.step === 4) {
+      // Deposit amount
+      const deposit = parseFloat(input);
+      if (isNaN(deposit) || deposit <= 0) {
+        bot.sendMessage(chatId, '❌ Please enter a valid deposit (must be > 0)');
+        return;
+      }
+      
+      session.deposit = deposit;
+      
+      // Get user's wallet
+      const user = await db.getUserByTelegramId(chatId);
+      
+      // Add item to database
+      await db.addItem(
+        user.wallet_address,
+        session.itemName,
+        session.description,
+        session.pricePerDay,
+        session.deposit
+      );
+      
+      // Show confirmation
+      bot.sendMessage(chatId, `
+✅ <b>Item Listed Successfully!</b>
+
+📦 Item: <b>${session.itemName}</b>
+📝 Description: ${session.description}
+💰 Price: ${session.pricePerDay} TON/day
+🏠 Deposit: ${session.deposit} TON
+
+🎉 Your item is now available for rent!
+
+<b>📊 Next Steps:</b>
+• Browse your items in "🎁 My Items"
+• Wait for renters to book
+• Track earnings in "👤 My Account"
+
+👉 /start - Return to main menu
+      `, { parseMode: 'html', markup: mainMenu });
+      
+      delete sessions[chatId];
+    }
+  } catch (error) {
+    bot.sendMessage(chatId, `❌ Error listing item: ${error.message}`, { parseMode: 'html' });
+    console.error('List item error:', error);
+  }
+}
+
+// ============================================================================
+// Rent Item Flow (Book an Item to Rent)
+// ============================================================================
+
+async function handleRentItemFlow(chatId, input, session) {
+  try {
+    if (session.step === 1) {
+      // Duration in days
+      const days = parseInt(input);
+      if (isNaN(days) || days <= 0) {
+        bot.sendMessage(chatId, '❌ Please enter a valid number of days (1 or more)');
+        return;
+      }
+
+      const item = session.item;
+      const totalPrice = item.price_per_day * days;
+      const totalCost = totalPrice + item.deposit_amount + 0.05; // Add gas fee
+
+      bot.sendMessage(chatId, `
+<b>Rental Summary</b>
+
+Item: ${item.item_name}
+Duration: ${days} days
+Price/day: ${item.price_per_day} TON
+Total Price: ${totalPrice.toFixed(2)} TON
+Deposit: ${item.deposit_amount} TON
+Gas Fee: 0.05 TON
+---
+Total Cost: ${totalCost.toFixed(2)} TON
+
+<b>Confirm and pay with your TON wallet</b>
+      `, {
+        parseMode: 'html',
+        markup: bot.inlineKeyboard([
+          [bot.inlineButton('Confirm Rental', { callback: `confirm_rent_${session.itemId}_${days}` })],
+          [bot.inlineButton('Cancel', { callback: 'browse_items' })]
+        ])
+      });
+
+      delete sessions[chatId];
+    }
+  } catch (error) {
+    bot.sendMessage(chatId, `❌ Error: ${error.message}`, { parseMode: 'html' });
+    console.error('Rent item error:', error);
+  }
+}
+
+// ============================================================================
+// Report Damage Flow
+// ============================================================================
+
+async function handleReportDamage(chatId, input, session) {
+  try {
+    if (session.rentalId && input.trim().length > 0) {
+      const damageReason = input.trim();
+      const user = await db.getUserByTelegramId(chatId);
+
+      // Report dispute
+      await db.reportDispute(session.rentalId, user.wallet_address, damageReason);
+
+      bot.sendMessage(chatId, `
+<b>Damage Report Submitted</b>
+
+Rental ID: #${session.rentalId}
+Reason: ${damageReason}
+
+Owner will review and respond.
+You'll be contacted within 24 hours.
+      `, {
+        parseMode: 'html',
+        markup: mainMenu
+      });
+
+      delete sessions[chatId];
+    }
+  } catch (error) {
+    bot.sendMessage(chatId, `❌ Error: ${error.message}`, { parseMode: 'html' });
+  }
+}
 
 // ============================================================================
 // Rent Item Flow
