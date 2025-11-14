@@ -1,4 +1,4 @@
-# 🚀 TON Rental Marketplace - Production Ready
+# 🚀 PEERLEASE - TON Rental Marketplace  Production Ready
 
 **A fully functional peer-to-peer rental marketplace on TON blockchain with user-controlled pricing and secure wallet integration via Telegram**
 
@@ -23,7 +23,7 @@
 ## ✅ What's Working Now
 
 ### **Fully Functional Features:**
-- ✅ **Wallet Connection** - TON Connect popup + Manual entry via Telegram
+- ✅ **Wallet Connection** - Simple manual wallet paste (proven reliable)
 - ✅ **List Items** - Users set their own rental prices and deposits
 - ✅ **Browse Items** - View all available items with rent buttons
 - ✅ **Rent Items** - Multi-step rental flow with duration selection
@@ -32,7 +32,7 @@
 - ✅ **Account Dashboard** - View rental stats and earned money
 - ✅ **Database Persistence** - SQLite3 with complete rental history
 - ✅ **Telegram Integration** - Full bot menu with 8 inline buttons
-- ✅ **TON Wallet Payment** - Deep links for TON transfers
+- ✅ **Wallet Display** - Full wallet address shown on /start (not truncated)
 
 ---
 
@@ -89,10 +89,12 @@ Telegram User (@rental_marketplace_bot)
 ## 🎯 Features Implemented
 
 ### **1. User Management**
-- ✅ TON Connect wallet popup (auto-saves on first payment)
-- ✅ Automatic wallet detection (no manual entry needed)
+- ✅ Simple manual wallet paste (copy-paste method)
+- ✅ Wallet validation (EQ/0Q format check)
+- ✅ Wallet saves to database automatically
 - ✅ User session tracking
 - ✅ Account statistics dashboard
+- ✅ Full wallet address displayed on Telegram
 
 ### **2. Item Listing (User-Controlled Pricing)**
 - ✅ Users set item name
@@ -255,20 +257,22 @@ created_at - Creation date
 
 ### **User Flows**
 
-#### **1. Connect Wallet** (Automatic on First Payment)
+#### **1. Connect Wallet** (Simple Manual Paste)
 ```
 Start: /start or Click "🔗 Connect Wallet"
      ↓
-BOT: Shows TON Connect link
+BOT: Shows prompt with instructions
+     • Copy your wallet address from your wallet (Tonkeeper, MyTonWallet, etc.)
+     • Must start with EQ or 0Q
      ↓
-You: Click "🔗 Open Wallet Extension"
+You: Paste your wallet address in Telegram
      ↓
-Wallet Opens: (Tonkeeper, MyTonWallet, etc.)
+BOT: Validates and saves wallet
+     • Shows: ✅ Wallet Connected!
+     • Displays: Full wallet address in code block
      ↓
-You: Can authorize connection (optional)
-     ↓
-Result: Wallet address will be saved when you make first payment
-        No manual entry needed!
+Result: Wallet address saved to database ✅
+        Ready to rent or list items!
 ```
 
 #### **2. List Item** (User-Controlled Pricing)
@@ -338,7 +342,7 @@ Option B: NO - Item damaged
 #### **5. My Account Dashboard**
 ```
 Shows:
-💼 Wallet: EQ123abc...xyz
+💼 Wallet: [Full wallet address shown - not truncated]
 📊 Member Since: Nov 11, 2025
 
 Stats:
@@ -399,8 +403,9 @@ cd rental-bot
 **Step 1: Connect Wallet**
 1. Send `/start`
 2. Click "🔗 Connect Wallet"
-3. Choose: TON Connect (popup) OR Manual Entry
-4. Follow the prompts
+3. Copy your wallet address from your wallet app (Tonkeeper, MyTonWallet, etc.)
+4. Paste it in Telegram (must start with EQ or 0Q)
+5. See confirmation: "✅ Wallet Connected!" with full address
 
 **Step 2: List an Item**
 1. Click "➕ List New Item"
@@ -412,7 +417,7 @@ cd rental-bot
 
 **Step 3: Rent an Item**
 1. Click "🏪 Browse Items"
-2. See all available items
+2. See all available items with prices
 3. Click "Rent #1" button
 4. Enter rental duration in days (e.g., "7")
 5. Review summary and total cost
@@ -428,45 +433,50 @@ cd rental-bot
 
 **Step 5: View Account Stats**
 1. Click "👤 My Account"
-2. See total earned, items rented, etc.
+2. See your wallet address, total earned, items rented, etc.
+3. Wallet shown in full (not truncated)
 
 ---
 
 ## 🔄 Recent Improvements
 
-### **Latest Updates (November 11-14, 2025)**
+### **Latest Updates (November 14, 2025)**
 
-✅ **Automated Wallet Connection (NEW!)** 
-- TON Connect popup direct linking
-- Wallet auto-saves on FIRST PAYMENT  
-- No manual wallet entry needed
-- Contract address auto-filled in payment links
+✅ **Simple Manual Wallet Connection (STABLE)** 
+- Users copy-paste their wallet address
+- Proven reliable method (no popup issues)
+- Instant validation (EQ/0Q format check)
+- Wallet saves to database automatically
+- No re-signin loops or popup failures
 
-✅ **Direct Payment Links (NEW!)**
-- Click "💳 Pay Now (Automated)" 
-- Opens wallet with amount pre-filled
-- Contract address already set
-- No manual contract entry needed
+✅ **Full Wallet Display on Telegram UI (IMPROVED)**
+- Wallet address shown in full (not truncated)
+- Displayed in code block (monospace format)
+- Easy to see and verify on Telegram
+- Shows on /start and account dashboard
 
-✅ **Auto-Wallet Detection (NEW!)**
-- Wallet saved automatically on first transaction
-- No separate connection step required
-- Automatic tracking for future rentals
-
-✅ **Fixed Rent Item Click**
-- Rent buttons now functional
-- Item details loading from database
+✅ **Fixed Rent Item Click (STABLE)**
+- Rent buttons now fully functional
+- Item details loading from database correctly
 - Duration selection working
+- Price calculations accurate
 
-✅ **User-Set Pricing**
-- Users set own rental prices
+✅ **User-Set Pricing (STABLE)**
+- Users set own rental prices per day
 - Users set own deposit amounts
 - No hardcoded contract prices
+- Complete pricing control
 
-✅ **Database Integration**
+✅ **Database Integration (STABLE)**
 - SQLite3 fully integrated
 - All data persisting across restarts
 - Complete rental history tracking
+- Wallet addresses saved properly
+
+### **Previous Updates (November 11, 2025)**
+- ✅ Customized README (removed old docs, added current architecture)
+- ✅ Fixed callback handlers for all menu buttons
+- ✅ Improved rental confirmation flow
 
 ---
 
@@ -580,12 +590,13 @@ Error: TELEGRAM_BOT_TOKEN not set in .env
 
 ### **Wallet connect popup not working**
 ```
-❌ Click doesn't work
+❌ Extension popup doesn't appear properly
 ```
 **Solution:** 
-- Check if TON_CONTRACT_ADDRESS is correct
-- Make sure @rental_marketplace_bot is in the .env (should be your bot username)
-- Verify bot token is valid
+- Bot uses simple manual paste method now (proven reliable)
+- Copy wallet from your wallet app → Paste in Telegram
+- Much simpler and more stable than popup method
+- No re-signin loops or page redirects
 
 ### **Items not showing in browse**
 ```
@@ -725,7 +736,7 @@ node bot.js
 
 ---
 
-**Last Updated:** November 11, 2025  
+**Last Updated:** November 14, 2025  
 **Status:** ✅ Fully Functional  
 **Ready for:** Testing & Deployment
 
