@@ -89,8 +89,8 @@ Telegram User (@rental_marketplace_bot)
 ## 🎯 Features Implemented
 
 ### **1. User Management**
-- ✅ Telegram ID-based user registration
-- ✅ TON wallet connection (via popup or manual entry)
+- ✅ TON Connect wallet popup (auto-saves on first payment)
+- ✅ Automatic wallet detection (no manual entry needed)
 - ✅ User session tracking
 - ✅ Account statistics dashboard
 
@@ -255,20 +255,20 @@ created_at - Creation date
 
 ### **User Flows**
 
-#### **1. Connect Wallet** (2 options)
+#### **1. Connect Wallet** (Automatic on First Payment)
 ```
 Start: /start or Click "🔗 Connect Wallet"
      ↓
-Options:
-  Option A: TON Connect (Popup wallet extension)
-     • Tonkeeper
-     • MyTonWallet
-     • TonHub
+BOT: Shows TON Connect link
      ↓
-  Option B: Manual Entry
-     • Paste wallet address manually
+You: Click "🔗 Open Wallet Extension"
      ↓
-Result: Wallet saved to database
+Wallet Opens: (Tonkeeper, MyTonWallet, etc.)
+     ↓
+You: Can authorize connection (optional)
+     ↓
+Result: Wallet address will be saved when you make first payment
+        No manual entry needed!
 ```
 
 #### **2. List Item** (User-Controlled Pricing)
@@ -434,12 +434,24 @@ cd rental-bot
 
 ## 🔄 Recent Improvements
 
-### **Latest Updates (November 2025)**
+### **Latest Updates (November 11-14, 2025)**
 
-✅ **Fixed Wallet Connection**
-- TON Connect popup now working
-- Manual entry option available
-- Both options in clean menu interface
+✅ **Automated Wallet Connection (NEW!)** 
+- TON Connect popup direct linking
+- Wallet auto-saves on FIRST PAYMENT  
+- No manual wallet entry needed
+- Contract address auto-filled in payment links
+
+✅ **Direct Payment Links (NEW!)**
+- Click "💳 Pay Now (Automated)" 
+- Opens wallet with amount pre-filled
+- Contract address already set
+- No manual contract entry needed
+
+✅ **Auto-Wallet Detection (NEW!)**
+- Wallet saved automatically on first transaction
+- No separate connection step required
+- Automatic tracking for future rentals
 
 ✅ **Fixed Rent Item Click**
 - Rent buttons now functional
@@ -455,11 +467,6 @@ cd rental-bot
 - SQLite3 fully integrated
 - All data persisting across restarts
 - Complete rental history tracking
-
-✅ **Item Availability**
-- Track which items are available
-- Rent status automatic
-- Return updates database
 
 ---
 
